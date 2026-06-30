@@ -16,7 +16,7 @@ from pathlib import Path
 from tkinter import Tk, StringVar, Toplevel, filedialog, messagebox
 from tkinter import ttk
 
-from main import ClusterMap, build_clusters, main as build_wafer_map
+from main import Wafer, build_wafer, export_wafer, filter_available_arrays_for_selection
 from wafer_map_selector import ClusterSelector
 from xlsx_reader import read_xlsx_as_dicts
 
@@ -114,7 +114,6 @@ class WaferMapGUI:
         # ======== Applied geometry settings ========
         # Store validated application state as numbers. StringVars are only
         # used at editable widget boundaries.
-        self.wafer_diameter: float | None = 3.0 * MILLIMETERS_PER_INCH
         self.wafer_diameter_text = StringVar(value="3.0")
         self.array_width: float = 1.05
         self.array_height: float = 0.25
@@ -135,7 +134,7 @@ class WaferMapGUI:
 
         # ======== GUI state ========
         self.status = StringVar(value="Select an XLSX file to begin.")
-        self.clusters: ClusterMap = {}
+        self.wafer: Wafer | None = None
         self.array_settings_applied = False
         self.die_settings_applied = False
         self.input_path.trace_add("write", self._invalidate_clusters)
@@ -581,13 +580,16 @@ class WaferMapGUI:
         )
         if selected:
             self.output_path.set(selected)
-            if self.clusters and self.export_button.instate(["!disabled"]):
+            if (
+                    self.wafer is not None
+                    and self.wafer.has_selected_clusters()
+                    and self.export_button.instate(["!disabled"])
+            ):
                 self.status.set("Ready to export selected clusters.")
 
     def _invalidate_clusters(self, *_args: object) -> None:
         """Clear built clusters after a geometry input changes."""
-        self.clusters = {}
-        self.wafer_diameter = None
+        self.wafer = None
 
         if hasattr(self, "cluster_selector_button"):
             self._update_cluster_selector_state()
@@ -610,6 +612,17 @@ class WaferMapGUI:
 
     def _build_cluster_data(self) -> bool:
         """Build and store labeled clusters immediately before selection."""
+        if self.wafer is not None:
+            try:
+                filter_available_arrays_for_selection(self.wafer)
+            except ValueError as exc:
+                messagebox.showerror("Select clusters", str(exc))
+                return False
+            self.export_button.configure(
+                state="normal" if self.wafer.has_selected_clusters() else "disabled"
+            )
+            return True
+
         try:
             input_path = self._validated_input_path()
             wafer_diameter_inches = self._number_from_entry(
@@ -619,7 +632,7 @@ class WaferMapGUI:
             wafer_diameter = wafer_diameter_inches * MILLIMETERS_PER_INCH
             geometry_settings = self._geometry_settings()
             array_table = read_xlsx_as_dicts(input_path, DEFAULT_SHEET_NAME)
-            clusters = build_clusters(
+            wafer = build_wafer(
                 wafer_diameter=wafer_diameter,
                 array_table=array_table,
                 die_width=float(geometry_settings["die_width"]),
@@ -632,13 +645,15 @@ class WaferMapGUI:
                 acceptor_width=float(geometry_settings["acceptor_width"]),
                 acceptor_height=float(geometry_settings["acceptor_height"]),
             )
+            filter_available_arrays_for_selection(wafer)
         except ValueError as exc:
             messagebox.showerror("Select clusters", str(exc))
             return False
 
-        self.wafer_diameter = wafer_diameter
-        self.clusters = clusters
-        self.export_button.configure(state="disabled")
+        self.wafer = wafer
+        self.export_button.configure(
+            state="normal" if self.wafer.has_selected_clusters() else "disabled"
+        )
         return True
 
     def _open_cluster_selector(self) -> None:
@@ -655,19 +670,23 @@ class WaferMapGUI:
 
         ClusterSelector(
             self.root,
-            clusters=self.clusters,
+            wafer=self.wafer,
             on_done=self._cluster_selection_finished,
         )
 
     def _cluster_selection_finished(self, selected_labels: set[str]) -> None:
-        """Keep only the clusters selected in the popup."""
-        self.clusters = {
-            label: self.clusters[label]
-            for label in selected_labels
-        }
-        if self.clusters:
+        """Store the cluster labels selected in the popup."""
+        if self.wafer is None:
+            self.export_button.configure(state="disabled")
+            self.status.set("Select clusters to rebuild the wafer map.")
+            return
+
+        self.wafer.set_selected_clusters(selected_labels)
+        if self.wafer.has_selected_clusters():
             self.export_button.configure(state="normal")
-            self.status.set(f"Selected {len(self.clusters)} clusters for export.")
+            self.status.set(
+                f"Selected {len(self.wafer.selected_cluster_labels)} clusters for export."
+            )
         else:
             self.export_button.configure(state="disabled")
             self.status.set("No clusters selected for export.")
@@ -682,11 +701,11 @@ class WaferMapGUI:
             messagebox.showerror("Export CSV", str(exc))
             return
 
-        if not self.clusters:
-            messagebox.showerror("Export CSV", "Select at least one cluster first.")
-            return
-        if self.wafer_diameter is None:
+        if self.wafer is None:
             messagebox.showerror("Export CSV", "Select clusters first.")
+            return
+        if not self.wafer.has_selected_clusters():
+            messagebox.showerror("Export CSV", "Select at least one cluster first.")
             return
 
         self.export_button.configure(state="disabled")
@@ -697,8 +716,7 @@ class WaferMapGUI:
             target=self._export_worker,
             args=(
                 output_path,
-                dict(self.clusters),
-                self.wafer_diameter,
+                self.wafer,
                 header_meta,
             ),
             daemon=True,
@@ -819,13 +837,12 @@ class WaferMapGUI:
     def _export_worker(
             self,
             output_path: Path,
-            clusters: ClusterMap,
-            wafer_diameter: float,
+            wafer: Wafer,
             header_meta: dict[str, str],
     ) -> None:
         """Flatten selected clusters and write their export rows."""
         try:
-            export_rows = build_wafer_map(clusters, wafer_diameter)
+            export_rows = export_wafer(wafer)
             write_export_csv(export_rows, output_path, header_meta)
         except Exception as exc:
             # UI updates must happen back on the Tk main thread.

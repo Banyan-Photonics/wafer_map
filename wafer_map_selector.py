@@ -1,7 +1,7 @@
 """Display built wafer clusters and let the user choose which ones to export.
 
 The main GUI builds the wafer geometry before opening this popup. It passes a
-`ClusterMap`, which is a dictionary such as:
+`Wafer`, which owns a cluster dictionary such as:
 
     {
         "AA": (cluster_aa, "outside"),
@@ -17,15 +17,17 @@ from __future__ import annotations
 
 from tkinter import Canvas, Event, StringVar, Toplevel
 from tkinter import ttk
-from typing import Callable, Iterable, Literal
+from typing import Callable, Literal
 
-from main import Cluster, ClusterMap
+from bar_selector_demo import BarSelector
+from main import Cluster, ClusterMap, Wafer
 
 
 DragAction = Literal["select", "deselect"]
 Point = tuple[float, float]
 CanvasRect = tuple[float, float, float, float]
 CanvasTransform = tuple[float, float, float, float, float]
+CONTROL_MASK = 0x0004
 
 
 class ClusterSelector(Toplevel):
@@ -42,6 +44,7 @@ class ClusterSelector(Toplevel):
 
     # ======== Geometry attributes ========
     clusters: ClusterMap
+    wafer: Wafer
     grid_bounds: CanvasRect
     cluster_canvas_rects: dict[str, CanvasRect]
 
@@ -73,7 +76,7 @@ class ClusterSelector(Toplevel):
     def __init__(
             self,
             parent,
-            clusters: ClusterMap,
+            wafer: Wafer,
             on_done: Callable[[set[str]], None],
     ) -> None:
         """Create the selector window and draw the currently built clusters.
@@ -81,8 +84,8 @@ class ClusterSelector(Toplevel):
         Args:
             parent: Main Tkinter window. Passing it to `Toplevel` makes this
                 selector a child popup of the wafer-map GUI.
-            clusters: Complete labeled cluster dictionary returned by
-                `main.build_clusters(...)`.
+            wafer: Complete wafer object with labeled cluster geometry and any
+                previous cluster selection.
             on_done: Callback owned by the main GUI. The selector calls it with
                 the selected cluster labels when the user clicks `Done`.
 
@@ -95,10 +98,11 @@ class ClusterSelector(Toplevel):
         self.minsize(720, 560)
         self.transient(parent)
 
-        self.clusters = clusters
-        cluster_labels = list(clusters)
-        first_cluster = clusters[cluster_labels[0]][0]
-        last_cluster = clusters[cluster_labels[-1]][0]
+        self.wafer = wafer
+        self.clusters = wafer.clusters
+        cluster_labels = list(self.clusters)
+        first_cluster = self.clusters[cluster_labels[0]][0]
+        last_cluster = self.clusters[cluster_labels[-1]][0]
         self.grid_bounds = (
             first_cluster.top_left[0],
             first_cluster.top_left[1],
@@ -106,7 +110,11 @@ class ClusterSelector(Toplevel):
             last_cluster.top_left[1] - last_cluster.height,
         )
         self.on_done = on_done
-        self.selected_labels: set[str] = set()
+        self.selected_labels: set[str] = {
+            label
+            for label in wafer.selected_cluster_labels
+            if label in self.clusters and self.clusters[label][1] != "outside"
+        }
         self.item_to_label: dict[int, str] = {}
         self.cluster_items: dict[str, tuple[int, int]] = {}
         self.cluster_canvas_rects: dict[str, CanvasRect] = {}
@@ -132,8 +140,7 @@ class ClusterSelector(Toplevel):
         - a footer linked to `self.status`
 
         Canvas bindings divide a mouse gesture into press, motion, and release
-        steps. A separate double-click binding reserves the entry point for the
-        future bar-selector popup.
+        steps. Right-click opens the bar selector for a selected cluster.
         """
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
@@ -146,7 +153,7 @@ class ClusterSelector(Toplevel):
             toolbar,
             text=(
                 "Click to toggle export inclusion. Drag to update a group. "
-                "Double-click a cluster to enter its bar layer."
+                "Right-click or Control-click a selected cluster to enter its bar layer."
             ),
         ).grid(row=0, column=0, sticky="w")
         ttk.Button(toolbar, text="Clear", command=self._clear_selection).grid(
@@ -166,7 +173,8 @@ class ClusterSelector(Toplevel):
         self.canvas.bind("<ButtonPress-1>", self._start_drag)
         self.canvas.bind("<B1-Motion>", self._drag_selection_box)
         self.canvas.bind("<ButtonRelease-1>", self._finish_drag)
-        self.canvas.bind("<Double-Button-1>", self._open_bar_selector_at)
+        self.canvas.bind("<Button-3>", self._open_bar_selector_at)
+        self.canvas.bind("<Control-Button-1>", self._open_bar_selector_at)
 
         footer = ttk.Frame(self, padding=(12, 0, 12, 10))
         footer.grid(row=2, column=0, sticky="ew")
@@ -356,6 +364,10 @@ class ClusterSelector(Toplevel):
         Starting on a selected cluster sets `drag_action` to `"deselect"`.
         Starting anywhere else sets it to `"select"`.
         """
+        if event.state & CONTROL_MASK:
+            self.drag_start = None
+            return
+
         self.drag_start = (event.x, event.y)
         self.drag_moved = False
         start_label = self._label_at(event.x, event.y)
@@ -521,25 +533,48 @@ class ClusterSelector(Toplevel):
         """Return the user's selected cluster labels and close the popup.
 
         `self.on_done(...)` calls the main GUI callback that was passed into the
-        constructor. The callback filters the GUI's cluster dictionary.
+        constructor. The callback stores the selected labels in the GUI.
         """
         self.on_done(self.selected_labels)
         self.destroy()
 
-    # ======== Future bar navigation ========
+    # ======== Bar navigation ========
     def _open_bar_selector_at(self, event: Event) -> None:
-        """Handle the future double-click transition into a cluster's bars.
+        """Open the real bar selector for a selected cluster."""
+        self.drag_start = None
+        if self.drag_rect_id is not None:
+            self.canvas.delete(self.drag_rect_id)
+            self.drag_rect_id = None
 
-        The bar-selector popup is not implemented yet. For now, this method
-        identifies the double-clicked cluster and writes a footer message. The
-        next implementation can pass `self.clusters[label][0].bars` into a new
-        bar-selector class here.
-        """
         label = self._label_at(event.x, event.y)
         if label is None:
             return
+        if label not in self.selected_labels:
+            self.status.set("Select the cluster before entering its bar layer.")
+            return
+
+        self.wafer.set_selected_clusters(self.selected_labels)
+        cluster, _status = self.clusters[label]
+        BarSelector(
+            self,
+            wafer=self.wafer,
+            cluster_label=label,
+            cluster=cluster,
+            selected_labels=self.wafer.selected_bars_by_cluster.get(label, set()),
+            on_done=self._bar_selection_finished,
+        )
+
+    def _bar_selection_finished(self, cluster_label: str, selected_bars: set[str]) -> None:
+        """Store bar selection and refresh cluster state after the bar popup."""
+        self.wafer.set_selected_bars(cluster_label, selected_bars)
+        if cluster_label in self.wafer.selected_cluster_labels:
+            self.selected_labels.add(cluster_label)
+        else:
+            self.selected_labels.discard(cluster_label)
+        self._update_cluster_style(cluster_label)
+        self._update_status()
         self.status.set(
-            f"Bar selector entry: {label}. Bar-level selection is the next implementation step."
+            f"Selected {len(selected_bars)} bars in cluster {cluster_label}."
         )
 
     # ======== Status ========

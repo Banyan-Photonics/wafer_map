@@ -391,12 +391,201 @@ class Die:
 ClusterMap = dict[str, tuple[Cluster, ClusterWaferStatus]]
 
 
+class _NoAvailableArraysError(ValueError):
+    """Raised when availability filtering removes every array in a cluster."""
+
+
+class Wafer:
+    """Top-level wafer state containing geometry and cluster inclusion."""
+
+    diameter: float
+    clusters: ClusterMap
+    selected_cluster_labels: set[str]
+    selected_bars_by_cluster: dict[str, set[str]]
+    selected_arrays_by_bar: dict[tuple[str, str], set[str]]
+    arrays_filtered: bool
+
+    def __init__(
+            self,
+            diameter: float,
+            clusters: ClusterMap,
+            selected_cluster_labels: set[str] | None = None,
+    ):
+        """Create a wafer from a complete labeled cluster map."""
+        if diameter <= 0:
+            raise ValueError("Wafer diameter must be greater than zero.")
+
+        self.diameter = diameter
+        self.clusters = clusters
+        self.selected_cluster_labels: set[str] = set()
+        self.selected_bars_by_cluster: dict[str, set[str]] = {}
+        self.selected_arrays_by_bar: dict[tuple[str, str], set[str]] = {}
+        self.arrays_filtered = False
+        if selected_cluster_labels is not None:
+            self.set_selected_clusters(selected_cluster_labels)
+
+    @property
+    def radius(self) -> float:
+        """Return the wafer radius in millimeters."""
+        return self.diameter / 2
+
+    def set_selected_clusters(self, selected_labels: set[str]) -> None:
+        """Store cluster labels selected for inclusion."""
+        self.selected_cluster_labels = {
+            label
+            for label in selected_labels
+            if label in self.clusters and self.clusters[label][1] != "outside"
+        }
+        self.selected_bars_by_cluster = {
+            label: selected_bars
+            for label, selected_bars in self.selected_bars_by_cluster.items()
+            if label in self.selected_cluster_labels
+        }
+        self.selected_arrays_by_bar = {
+            (cluster_label, bar_label): selected_arrays
+            for (cluster_label, bar_label), selected_arrays
+            in self.selected_arrays_by_bar.items()
+            if cluster_label in self.selected_cluster_labels
+        }
+
+    def set_selected_bars(self, cluster_label: str, selected_labels: set[str]) -> None:
+        """Store bar labels selected inside one selected cluster."""
+        if cluster_label not in self.selected_cluster_labels:
+            return
+        cluster, status = self.clusters[cluster_label]
+        if status == "outside":
+            self.selected_cluster_labels.discard(cluster_label)
+            self.selected_bars_by_cluster.pop(cluster_label, None)
+            self._clear_array_selection_for_cluster(cluster_label)
+            return
+
+        selected_bars = {
+            label
+            for label in selected_labels
+            if label in cluster.bars
+        }
+        if not selected_bars:
+            self.selected_cluster_labels.discard(cluster_label)
+            self.selected_bars_by_cluster.pop(cluster_label, None)
+            self._clear_array_selection_for_cluster(cluster_label)
+            return
+
+        self.selected_bars_by_cluster[cluster_label] = selected_bars
+        self.selected_arrays_by_bar = {
+            key: selected_arrays
+            for key, selected_arrays in self.selected_arrays_by_bar.items()
+            if key[0] != cluster_label or key[1] in selected_bars
+        }
+
+    def set_selected_arrays(
+            self,
+            cluster_label: str,
+            bar_label: str,
+            selected_labels: set[str],
+    ) -> None:
+        """Store array labels selected inside one selected bar."""
+        if cluster_label not in self.selected_cluster_labels:
+            return
+        cluster, status = self.clusters[cluster_label]
+        if status == "outside" or bar_label not in cluster.bars:
+            return
+
+        selected_bars = self.selected_bars_by_cluster.get(cluster_label)
+        if selected_bars is None or bar_label not in selected_bars:
+            return
+
+        bar = cluster.bars[bar_label]
+        selected_arrays = {
+            label
+            for label in selected_labels
+            if label in bar.arrays
+        }
+        key = (cluster_label, bar_label)
+        if selected_arrays:
+            self.selected_arrays_by_bar[key] = selected_arrays
+            return
+
+        self.selected_arrays_by_bar.pop(key, None)
+        selected_bars.discard(bar_label)
+        if selected_bars:
+            self.selected_bars_by_cluster[cluster_label] = selected_bars
+            return
+
+        self.selected_cluster_labels.discard(cluster_label)
+        self.selected_bars_by_cluster.pop(cluster_label, None)
+        self._clear_array_selection_for_cluster(cluster_label)
+
+    def _clear_array_selection_for_cluster(self, cluster_label: str) -> None:
+        """Remove all stored array selections for one cluster."""
+        self.selected_arrays_by_bar = {
+            key: selected_arrays
+            for key, selected_arrays in self.selected_arrays_by_bar.items()
+            if key[0] != cluster_label
+        }
+
+    def selected_clusters_for_export(self) -> ClusterMap:
+        """Return selected clusters in wafer-grid order."""
+        selected_clusters: ClusterMap = {}
+        for label, (cluster, status) in self.clusters.items():
+            if label not in self.selected_cluster_labels:
+                continue
+
+            selected_bars = self.selected_bars_by_cluster.get(label)
+            if selected_bars is None:
+                selected_clusters[label] = (cluster, status)
+                continue
+
+            bars: dict[str, Bar] = {}
+            for bar_label, bar in cluster.bars.items():
+                if bar_label not in selected_bars:
+                    continue
+                export_bar = self._bar_for_export(label, bar_label, bar)
+                if export_bar is not None:
+                    bars[bar_label] = export_bar
+            if bars:
+                selected_clusters[label] = (
+                    Cluster(
+                        top_left=cluster.top_left,
+                        bars=bars,
+                        width=cluster.width,
+                        height=cluster.height,
+                        quadrant=cluster.quadrant,
+                    ),
+                    status,
+                )
+        return selected_clusters
+
+    def _bar_for_export(self, cluster_label: str, bar_label: str, bar: Bar) -> Bar | None:
+        """Return a bar filtered by array selection, if one exists."""
+        selected_arrays = self.selected_arrays_by_bar.get((cluster_label, bar_label))
+        if selected_arrays is None:
+            return bar
+
+        arrays = {
+            array_label: array
+            for array_label, array in bar.arrays.items()
+            if array_label in selected_arrays
+        }
+        if not arrays:
+            return None
+        return Bar(
+            top_left=bar.top_left,
+            arrays=arrays,
+            width=bar.width,
+            height=bar.height,
+        )
+
+    def has_selected_clusters(self) -> bool:
+        """Return whether any selectable clusters are selected."""
+        return bool(self.selected_cluster_labels)
+
+
 def _csv_number(value: float) -> float:
     """Return a clean numeric value for CSV export."""
     return round(value, 6)
 
 
-def build_clusters(
+def build_wafer(
         wafer_diameter: float,
         array_table: ArrayTable,
         die_width: float,
@@ -408,17 +597,18 @@ def build_clusters(
         acceptor_delta_y: float,
         acceptor_width: float,
         acceptor_height: float,
-) -> ClusterMap:
-    """Build the complete labeled cluster grid and classify each cluster.
+) -> Wafer:
+    """Build the complete wafer with labeled cluster geometry.
 
-    The returned dictionary maps stable wafer-grid labels such as `"AB"` to
-    `(Cluster, ClusterWaferStatus)` tuples. The grid is preserved even when a
-    cluster is outside the wafer so the selector can display the full layout.
-    Automatic fab-area and wafer-edge array filtering happens later in
-    `main(...)`, after the user chooses clusters.
+    The returned wafer stores a cluster dictionary that maps stable wafer-grid
+    labels such as `"AB"` to `(Cluster, ClusterWaferStatus)` tuples. The grid is
+    preserved even when a cluster is outside the wafer so the selector can
+    display the full layout. Automatic fab-area and wafer-edge array filtering
+    can be applied once before visual selection with
+    `filter_available_arrays_for_selection(...)`.
 
     >>> rows = [{"Array position": "1", "A": "demo"}]
-    >>> clusters = build_clusters(
+    >>> wafer = build_wafer(
     ...     wafer_diameter=1.0,
     ...     array_table=rows,
     ...     die_width=0.25,
@@ -431,9 +621,9 @@ def build_clusters(
     ...     acceptor_width=0.016,
     ...     acceptor_height=0.016,
     ... )
-    >>> sorted(clusters)[:2]
+    >>> sorted(wafer.clusters)[:2]
     ['AA', 'AB']
-    >>> first_cluster, first_status = clusters["AA"]
+    >>> first_cluster, first_status = wafer.clusters["AA"]
     >>> first_cluster.width, first_cluster.height, first_cluster.bars_per_cluster
     (0.275, 0.25, 1)
     >>> first_status
@@ -606,7 +796,40 @@ def build_clusters(
                 _cluster_in_wafer(wafer_radius, cluster),
             )
 
-    return clusters
+    return Wafer(
+        diameter=wafer_diameter,
+        clusters=clusters,
+    )
+
+
+def filter_available_arrays_for_selection(wafer: Wafer) -> None:
+    """Remove unavailable arrays from a wafer once before visual selection.
+
+    The operation is destructive for the current wafer object. It removes
+    arrays blocked by Fab Area markers or wafer-edge checks, marks clusters with
+    no available arrays as `"outside"`, and sets `wafer.arrays_filtered` so the
+    same wafer is not filtered again when the selector reopens.
+    """
+    if wafer.arrays_filtered:
+        return
+
+    filtered_clusters: ClusterMap = {}
+    for cluster_label, (cluster, status) in wafer.clusters.items():
+        if status == "outside":
+            filtered_clusters[cluster_label] = (cluster, status)
+            continue
+
+        try:
+            filtered_clusters[cluster_label] = (
+                _select_array_include(cluster, wafer.radius),
+                status,
+            )
+        except _NoAvailableArraysError:
+            filtered_clusters[cluster_label] = (cluster, "outside")
+
+    wafer.clusters = filtered_clusters
+    wafer.arrays_filtered = True
+    wafer.set_selected_clusters(wafer.selected_cluster_labels)
 
 
 def _cluster_in_wafer(
@@ -768,7 +991,7 @@ def _select_array_include(
             )
 
     if not selected_bars:
-        raise ValueError("Cluster has no selected arrays.")
+        raise _NoAvailableArraysError("Cluster has no selected arrays.")
 
     return Cluster(
         top_left=cluster.top_left,
@@ -905,9 +1128,10 @@ def _sort_rows_for_serpentine_probe_path(rows: ExportTable) -> ExportTable:
     return sorted_rows
 
 
-def main(
+def _export_clusters(
         clusters: ClusterMap,
         wafer_diameter: float,
+        filter_arrays: bool = True,
 ) -> ExportTable:
     """Filter selected clusters and flatten them into serpentine export rows."""
     wafer_radius = wafer_diameter / 2
@@ -916,10 +1140,11 @@ def main(
         if status == "outside":
             continue
 
-        try:
-            cluster = _select_array_include(cluster, wafer_radius)
-        except ValueError:
-            continue
+        if filter_arrays:
+            try:
+                cluster = _select_array_include(cluster, wafer_radius)
+            except ValueError:
+                continue
 
         export_rows.extend(
             _export_rows_for_cluster(
@@ -931,10 +1156,19 @@ def main(
     return _sort_rows_for_serpentine_probe_path(export_rows)
 
 
+def export_wafer(wafer: Wafer) -> ExportTable:
+    """Filter the selected clusters on a wafer and flatten them for export."""
+    return _export_clusters(
+        wafer.selected_clusters_for_export(),
+        wafer_diameter=wafer.diameter,
+        filter_arrays=not wafer.arrays_filtered,
+    )
+
+
 if __name__ == '__main__':
     wafer_diameter_input = input("Wafer diameter [mm]: ").strip()
     array_table = rx("array_position_table.xlsx", "Cluster", 1)
-    clusters = build_clusters(
+    wafer = build_wafer(
         wafer_diameter=float(wafer_diameter_input),
         array_table=array_table,
         die_width=0.25,
@@ -947,7 +1181,8 @@ if __name__ == '__main__':
         acceptor_width=0.016,
         acceptor_height=0.016,
     )
-    export_data = main(clusters, wafer_diameter=float(wafer_diameter_input))
+    wafer.set_selected_clusters(set(wafer.clusters))
+    export_data = export_wafer(wafer)
     print(f"Generated {len(export_data)} export rows.")
     if export_data:
         print(export_data[0])
