@@ -25,7 +25,7 @@ MILLIMETERS_PER_INCH = 25.4
 DEFAULT_SHEET_NAME = "Cluster"
 
 
-GeometrySettings = dict[str, float | int | str]
+#GeometrySettings = dict[str, float | int | str]
 
 CSV_METADATA_FIELDS = [
     "ID_PROJECT",

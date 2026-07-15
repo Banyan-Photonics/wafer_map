@@ -28,7 +28,7 @@ from xlsx_reader import read_xlsx_as_dicts as rx
 Point = tuple[float, float]
 ClusterWaferStatus = Literal["inside", "edge", "outside"]
 ArrayTable = list[dict[str, str]]
-ExportTable = list[dict[str, str | float]]
+ExportTable = list[dict[str, float]]
 
 
 class Cluster:
