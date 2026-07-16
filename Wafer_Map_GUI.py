@@ -789,7 +789,8 @@ class WaferMapGUI:
         else:
             raise ValueError("Acceptor shape must be circle or rectangle.")
 
-        die_width = (array_width - 2 * array_side) / dies_per_array
+        #die_width = (array_width - 2 * array_side) / dies_per_array
+        die_width = (array_width) #FA 2026-07-16: REMOVED CLEAVE STREET
         if die_width <= 0:
             raise ValueError("Array width must be greater than 2 x array side.")
         if acceptor_shape == "circle":

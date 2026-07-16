@@ -670,7 +670,8 @@ def build_wafer(
 
     # These are local footprint dimensions used for stepping from one object to
     # the next. The object instances also store their derived width and height.
-    array_width = array_side * 2 + die_width * dies_per_array
+    array_width =  die_width * dies_per_array #FA 2026-07-16: REMOVED THE CLEAVE STREET FROM CALC
+    #array_width = array_side * 2 + die_width * dies_per_array
     bar_height = die_height
 
     def quadrant_for_cluster_bounds(
@@ -1082,12 +1083,20 @@ def _export_rows_for_cluster(
                         "tile_id": cluster_label,
                         "die_id": f"{int(bar_label):02d}{array_label}", #FA 2026-07-16: REMOVED PD DIE NUMBER FROM WAFER MAP
                         #"die_id": f"{int(bar_label):02d}{array_label}{die_number}", #FA 2026-07-16: COMMENTED OUT LINE THAT ADDS PD DIE NUMBER TO WAFER MAP
-                        "xc_ref[mm]": _csv_number(center_x),
-                        "yc_ref[mm]": _csv_number(center_y),
-                        "xc_chip[mm]": _csv_number(center_x),
-                        "yc_chip[mm]": _csv_number(center_y),
-                        "width[mm]": _csv_number(die.width),
-                        "height[mm]": _csv_number(die.height),
+                        # "xc_ref[mm]": _csv_number(center_x),
+                        # "yc_ref[mm]": _csv_number(center_y),
+                        # "xc_chip[mm]": _csv_number(center_x),
+                        # "yc_chip[mm]": _csv_number(center_y),
+                        # "width[mm]": _csv_number(die.width),
+                        # "height[mm]": _csv_number(die.height),
+                        # "Array detail": array.detail,
+                        
+                        "xc_ref[mm]": _csv_number(center_y), #FA 2026-07-16: 90 DEGREE CLOCKWISE ROTATION
+                        "yc_ref[mm]": _csv_number(-center_x),
+                        "xc_chip[mm]": _csv_number(center_y),
+                        "yc_chip[mm]": _csv_number(-center_x),
+                        "width[mm]": _csv_number(die.height),
+                        "height[mm]": _csv_number(die.width),
                         "Array detail": array.detail,
                     }
                 )
