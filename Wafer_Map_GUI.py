@@ -797,11 +797,11 @@ class WaferMapGUI:
         else:
             acceptor_center_x = acceptor_delta_x + acceptor_width / 2
 
-        if not self._numbers_close(acceptor_center_x, die_width / 2):
-            raise ValueError(
-                "Acceptor must be symmetric from left/right die sides: "
-                "its center X must equal half the die width."
-            )
+#        if not self._numbers_close(acceptor_center_x, die_width / 2):
+ #           raise ValueError(
+  #              "Acceptor must be symmetric from left/right die sides: "
+   #             "its center X must equal half the die width."
+    #        )
 
         return {
             "array_width": array_width,
