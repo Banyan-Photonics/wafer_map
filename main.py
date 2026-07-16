@@ -1080,7 +1080,8 @@ def _export_rows_for_cluster(
                 rows.append(
                     {
                         "tile_id": cluster_label,
-                        "die_id": f"{int(bar_label):02d}{array_label}{die_number}",
+                        "die_id": f"{int(bar_label):02d}{array_label}", #FA 2026-07-16: REMOVED PD DIE NUMBER FROM WAFER MAP
+                        #"die_id": f"{int(bar_label):02d}{array_label}{die_number}", #FA 2026-07-16: COMMENTED OUT LINE THAT ADDS PD DIE NUMBER TO WAFER MAP
                         "xc_ref[mm]": _csv_number(center_x),
                         "yc_ref[mm]": _csv_number(center_y),
                         "xc_chip[mm]": _csv_number(center_x),
