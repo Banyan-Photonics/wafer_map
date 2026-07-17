@@ -109,7 +109,8 @@ class WaferMapGUI:
         self.root = root
         default_input_path = Path(__file__).with_name("array_position_table.xlsx")
         self.input_path = StringVar(value=str(default_input_path))
-        self.output_path = StringVar(value=str(default_input_path.with_suffix(".csv")))
+        #self.output_path = StringVar(value=str(default_input_path.with_suffix(".csv"))) #FA 2026-07-17: COMMENTED OUT, REPLACED BY THE LINE BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
+        self.output_directory = StringVar(value=str(default_input_path.parent)) #FA 2026-07-17: CHANGED THE CSV EXPORT FIELD TO ACCEPT A DIRECTORY RATHER THAN HAVINT TO SPECIFY FILE NAME
 
         # ======== Applied geometry settings ========
         # Store validated application state as numbers. StringVars are only
@@ -165,11 +166,20 @@ class WaferMapGUI:
             padx=(10, 0),
         )
 
-        ttk.Label(frame, text="CSV export").grid(row=1, column=0, sticky="w", padx=(0, 10),
-                                                 pady=(12, 0))
-        ttk.Entry(frame, textvariable=self.output_path).grid(row=1, column=1, sticky="ew",
-                                                             pady=(12, 0))
-        ttk.Button(frame, text="Save As", command=self._select_output).grid(
+        # ttk.Label(frame, text="CSV export").grid(row=1, column=0, sticky="w", padx=(0, 10),
+        #                                          pady=(12, 0)) #FA 2026-07-17: COMMENTED OUT AND REPLACED WITH BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
+        
+        ttk.Label(frame, text="Export folder").grid(row=1, column=0, sticky="w", padx=(0, 10),
+                                         pady=(12, 0)) #FA 2026-07-17: SETS FIELD FOR EXPORT FOLDER ON LEFT OF STRING BOX
+        
+        # ttk.Entry(frame, textvariable=self.output_path).grid(row=1, column=1, sticky="ew",
+        #                                                      pady=(12, 0)) #FA 2026-07-17: COMMENTED OUT AND REPLACED WITH BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
+        
+        ttk.Entry(frame, textvariable=self.output_directory).grid(row=1, column=1, sticky="ew",
+                                                             pady=(12, 0)) #FA 2026-07-17: SETS THE CSV SAVE PATH
+        
+        # ttk.Button(frame, text="Save As", command=self._select_output).grid( #FA 2026-07-17: COMMENTED OUT AND REPLACED WITH BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
+        ttk.Button(frame, text="Browse", command=self._select_output).grid( #FA 2026-07-17: SAVE AS DIRECTORY BUTTON
             row=1,
             column=2,
             padx=(10, 0),
@@ -560,26 +570,49 @@ class WaferMapGUI:
         input_path = Path(selected)
         self.input_path.set(str(input_path))
 
-        if not self.output_path.get():
-            self.output_path.set(str(input_path.with_suffix(".csv")))
+        # if not self.output_path.get():
+        #     self.output_path.set(str(input_path.with_suffix(".csv"))) #FA 2026-07-17: COMMENTED OUT AND REPLACED WITH BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
+        
+        if not self.output_directory.get():
+            self.output_directory.set(str(input_path.parent)) #FA 2026-07-17: SETS A DEFAULT LOCATION INSTEAD OF A CSV INCASE NON IS SELECTED
 
         if self.array_settings_applied and self.die_settings_applied:
             self.status.set("Input selected. Select clusters to rebuild the wafer map.")
         else:
             self.status.set("Input selected. Apply array and die settings before selecting clusters.")
 
-    def _select_output(self) -> None:
-        """Prompt the user for the output CSV path."""
-        # Start the save dialog near the selected input workbook when possible.
-        initial_dir = Path(self.input_path.get()).parent if self.input_path.get() else Path.cwd()
-        selected = filedialog.asksaveasfilename(
-            title="Save wafer map CSV",
-            defaultextension=".csv",
+    # def _select_output(self) -> None: #FA 2026-07-17: COMMENTED OUT AND REPLACED WITH BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
+    #     """Prompt the user for the output CSV path."""
+    #     # Start the save dialog near the selected input workbook when possible.
+    #     initial_dir = Path(self.input_path.get()).parent if self.input_path.get() else Path.cwd()
+    #     selected = filedialog.asksaveasfilename(
+    #         title="Save wafer map CSV",
+    #         defaultextension=".csv",
+    #         initialdir=initial_dir,
+    #         filetypes=[("CSV file", "*.csv"), ("All files", "*.*")],
+    #     )
+    #     if selected:
+    #         self.output_path.set(selected)
+    #         if (
+    #                 self.wafer is not None
+    #                 and self.wafer.has_selected_clusters()
+    #                 and self.export_button.instate(["!disabled"])
+    #         ):
+    #             self.status.set("Ready to export selected clusters.")
+    
+    def _select_output(self) -> None: #FA 2026-07-17: SELECTS A FOLDER INSTEAD OF A FILENAME
+        """Prompt the user for the output folder."""
+        # Start the browse dialog near the selected input workbook when possible.
+        initial_dir = (
+            self.output_directory.get()
+            or (Path(self.input_path.get()).parent if self.input_path.get() else str(Path.cwd()))
+        )
+        selected = filedialog.askdirectory(
+            title="Select export folder",
             initialdir=initial_dir,
-            filetypes=[("CSV file", "*.csv"), ("All files", "*.*")],
         )
         if selected:
-            self.output_path.set(selected)
+            self.output_directory.set(selected)
             if (
                     self.wafer is not None
                     and self.wafer.has_selected_clusters()
@@ -691,12 +724,23 @@ class WaferMapGUI:
             self.export_button.configure(state="disabled")
             self.status.set("No clusters selected for export.")
 
-    def _start_export(self) -> None:
+    # def _start_export(self) -> None:
+    #     """Write the selected cluster tree to CSV in a worker thread."""
+    #     try:
+    #         output_path = self._validated_output_path()
+    #         geometry_settings = self._geometry_settings()
+    #         header_meta = self._header_meta_values(geometry_settings)
+    #     except ValueError as exc:
+    #         messagebox.showerror("Export CSV", str(exc))
+    #         return
+    
+    def _start_export(self) -> None: #FA 2026-07-17: BUILD THE PATH FROM DIRECTORY + FIELDS IN THE GUI
         """Write the selected cluster tree to CSV in a worker thread."""
         try:
-            output_path = self._validated_output_path()
+            output_directory = self._validated_output_directory()
             geometry_settings = self._geometry_settings()
             header_meta = self._header_meta_values(geometry_settings)
+            output_path = output_directory / self._build_export_filename(header_meta)
         except ValueError as exc:
             messagebox.showerror("Export CSV", str(exc))
             return
@@ -738,19 +782,46 @@ class WaferMapGUI:
 
         return input_path
 
-    def _validated_output_path(self) -> Path:
-        """Return the output CSV path, adding the extension if needed."""
-        # Normalize the output path and force a .csv extension when omitted.
-        raw_path = self.output_path.get().strip()
+    # def _validated_output_path(self) -> Path:
+    #     """Return the output CSV path, adding the extension if needed."""
+    #     # Normalize the output path and force a .csv extension when omitted.
+    #     raw_path = self.output_path.get().strip()
+    #     if not raw_path:
+    #         raise ValueError("Choose where to save the CSV file.")
+
+    #     output_path = Path(raw_path)
+    #     if output_path.suffix.lower() != ".csv":
+    #         output_path = output_path.with_suffix(".csv")
+    #         self.output_path.set(str(output_path))
+
+    #     return output_path
+    
+    def _validated_output_directory(self) -> Path: 
+        """Return the export folder after validating it exists."""
+        raw_path = self.output_directory.get().strip()
         if not raw_path:
-            raise ValueError("Choose where to save the CSV file.")
+            raise ValueError("Choose an export folder first.")
 
-        output_path = Path(raw_path)
-        if output_path.suffix.lower() != ".csv":
-            output_path = output_path.with_suffix(".csv")
-            self.output_path.set(str(output_path))
+        output_directory = Path(raw_path)
+        if not output_directory.exists():
+            raise ValueError("The selected export folder does not exist.")
+        if not output_directory.is_dir():
+            raise ValueError("The selected export path is not a folder.")
 
-        return output_path
+        return output_directory
+
+    def _build_export_filename(self, header_meta: dict[str, str]) -> str: #FA 2026-07-17: !!!CHANGE THIS IF YOU WANT TO CHANGE NAME ORDER!!!
+        """Return the auto-generated CSV filename from header metadata."""
+        # Filename format: {ID_PROJECT}_{ID_BATCH}_{ID_WAFER}_{WAFER_ROTATION}.csv
+        required_fields = ("ID_PROJECT", "ID_BATCH", "ID_WAFER", "WAFER_ROTATION")
+        values = [header_meta.get(field, "").strip() for field in required_fields]
+        if not all(values):
+            raise ValueError(
+                "Enter ID_PROJECT, ID_BATCH, ID_WAFER, and WAFER_ROTATION "
+                "before exporting."
+            )
+
+        return "_".join(values) + ".csv"
 
     def _number_from_entry(self, value: StringVar, label: str) -> float:
         """Parse a required floating-point Entry value."""
