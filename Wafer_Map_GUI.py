@@ -44,7 +44,7 @@ EDITABLE_METADATA_FIELDS = [
     "ID_WAFER",
     "WAFER_ROTATION",
     "TEST_STRUCTURE",
-    "LINES_DATA",
+    # "LINES_DATA", #FA 2026-07-17: REMOVED LINES DATA AS INPUT
 ]
 
 # Keys used to read values from the geometry engine's export rows. These are
@@ -906,7 +906,18 @@ class WaferMapGUI:
         header_meta["TILE_HEIGHT"] = str(round(float(geometry_settings["array_height"]) * 42, 6))
         return header_meta
 
-    def _export_worker(
+    # def _export_worker(
+    #         self,
+    #         output_path: Path,
+    #         wafer: Wafer,
+    #         header_meta: dict[str, str],
+    # ) -> None:
+    #     """Flatten selected clusters and write their export rows."""
+    #     try:
+    #         export_rows = export_wafer(wafer)
+    #         write_export_csv(export_rows, output_path, header_meta)
+    
+    def _export_worker( #FA 2026-07-17: USES THE NUMBER OF GENERATED ROWS TO WRITE LINES_DATA IN CSV
             self,
             output_path: Path,
             wafer: Wafer,
@@ -915,6 +926,7 @@ class WaferMapGUI:
         """Flatten selected clusters and write their export rows."""
         try:
             export_rows = export_wafer(wafer)
+            header_meta["LINES_DATA"] = str(len(export_rows))
             write_export_csv(export_rows, output_path, header_meta)
         except Exception as exc:
             # UI updates must happen back on the Tk main thread.
