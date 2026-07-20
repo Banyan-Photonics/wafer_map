@@ -15,16 +15,8 @@ import threading
 from pathlib import Path
 from tkinter import BooleanVar, Tk, StringVar, Toplevel, filedialog, messagebox
 from tkinter import ttk
-from tkinter import Listbox, Scrollbar, EXTENDED, END, BOTH, LEFT, RIGHT, Y
 
-from main import (
-    Wafer,
-    build_wafer,
-    export_wafer,
-    extract_design_type,
-    filter_available_arrays_for_selection,
-    list_available_designs,
-)
+from main import Wafer, build_wafer, export_wafer, filter_available_arrays_for_selection
 from wafer_map_selector import ClusterSelector
 from xlsx_reader import read_xlsx_as_dicts
 
@@ -148,26 +140,18 @@ class WaferMapGUI:
         }
         self.exclude_bars_01_02 = BooleanVar(value=False)
 
-        # ======== Structure/design selection ======== #FA 2026-07-20: NEW STRUCTURE FILTER STATE
-        # `available_designs` holds every structure label found in the current
-        # XLSX file. `selected_designs` is None until the user opens the
-        # popup; None means "no filter applied, keep every structure".
-        self.available_designs: list[str] = []
-        self.selected_designs: set[str] | None = None
-
         # ======== GUI state ========
         self.status = StringVar(value="Select an XLSX file to begin.")
         self.wafer: Wafer | None = None
         self.array_settings_applied = False
         self.die_settings_applied = False
         self.input_path.trace_add("write", self._invalidate_clusters)
-        self.input_path.trace_add("write", self._invalidate_design_selection) #FA 2026-07-20: RESET STRUCTURES WHEN THE XLSX PATH CHANGES
         self.wafer_diameter_text.trace_add("write", self._invalidate_clusters)
 
         # Configure the main window before creating widgets.
         self.root.title("Wafer Map CSV Exporter")
-        self.root.geometry("760x680")
-        self.root.minsize(680, 640)
+        self.root.geometry("760x640")
+        self.root.minsize(680, 600)
 
         self._build_layout()
 
@@ -253,22 +237,9 @@ class WaferMapGUI:
             pady=(12, 0),
         )
 
-        # ======== Structure/design selector ======== #FA 2026-07-20: NEW BUTTON
-        self.design_selector_button = ttk.Button(
-            frame,
-            text="Select structures",
-            command=self._open_design_selector,
-        )
-        self.design_selector_button.grid(
-            row=6,
-            column=1,
-            sticky="w",
-            pady=(12, 0),
-        )
-
         # ======== Header metadata ========
         meta_frame = ttk.LabelFrame(frame, text="Header meta", padding=12)
-        meta_frame.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(18, 0))
+        meta_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(18, 0))
         meta_frame.columnconfigure(1, weight=1)
         meta_frame.columnconfigure(3, weight=1)
 
@@ -344,10 +315,10 @@ class WaferMapGUI:
             command=self._start_export,
             state="disabled",
         )
-        self.export_button.grid(row=8, column=2, sticky="e", pady=(22, 0))
+        self.export_button.grid(row=7, column=2, sticky="e", pady=(22, 0))
 
-        ttk.Separator(frame).grid(row=9, column=0, columnspan=3, sticky="ew", pady=(18, 12))
-        ttk.Label(frame, textvariable=self.status).grid(row=10, column=0, columnspan=3, sticky="w")
+        ttk.Separator(frame).grid(row=8, column=0, columnspan=3, sticky="ew", pady=(18, 12))
+        ttk.Label(frame, textvariable=self.status).grid(row=9, column=0, columnspan=3, sticky="w")
 
     def _open_array_settings_popup(self) -> None:
         """Open the modal popup for array pitch and spacing inputs."""
@@ -637,114 +608,6 @@ class WaferMapGUI:
                                                                             padx=(0, 8))
         ttk.Button(button_frame, text="Apply", command=apply_values).grid(row=0, column=1)
 
-    def _open_design_selector(self) -> None: #FA 2026-07-20: NEW POPUP FOR STRUCTURE/DESIGN SELECTION
-        """Open the modal popup for selecting which structures to export."""
-        try:
-            input_path = self._validated_input_path()
-            array_table = read_xlsx_as_dicts(input_path, DEFAULT_SHEET_NAME)
-            available_designs = list_available_designs(array_table)
-        except ValueError as exc:
-            messagebox.showerror("Select structures", str(exc))
-            return
-        except Exception as exc:
-            messagebox.showerror("Select structures", f"Could not read XLSX file: {exc}")
-            return
-
-        if not available_designs:
-            messagebox.showinfo(
-                "Select structures",
-                "No structures were found in the array table.",
-            )
-            return
-
-        # Carry forward any previous selection that's still valid for this
-        # file. If nothing was selected yet, default to selecting everything.
-        if self.selected_designs is None:
-            previously_selected = set(available_designs)
-        else:
-            previously_selected = self.selected_designs & set(available_designs)
-
-        self.available_designs = available_designs
-
-        # ======== Popup setup ========
-        popup = Toplevel(self.root)
-        popup.title("Select structures")
-        popup.transient(self.root)
-        popup.grab_set()
-
-        frame = ttk.Frame(popup, padding=16)
-        frame.grid(row=0, column=0, sticky="nsew")
-        popup.columnconfigure(0, weight=1)
-        popup.rowconfigure(0, weight=1)
-        frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(1, weight=1)
-
-        ttk.Label(
-            frame,
-            text="Only the checked structures will be included in the export.",
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-
-        # ======== Multi-select list ========
-        list_frame = ttk.Frame(frame)
-        list_frame.grid(row=1, column=0, columnspan=2, sticky="nsew")
-        list_frame.columnconfigure(0, weight=1)
-        list_frame.rowconfigure(0, weight=1)
-
-        listbox = Listbox(list_frame, selectmode=EXTENDED, height=12, exportselection=False)
-        listbox.grid(row=0, column=0, sticky="nsew")
-        scrollbar = Scrollbar(list_frame, orient="vertical", command=listbox.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        listbox.configure(yscrollcommand=scrollbar.set)
-
-        for design in available_designs:
-            listbox.insert(END, design)
-        for index, design in enumerate(available_designs):
-            if design in previously_selected:
-                listbox.selection_set(index)
-
-        # ======== Select all / clear all ========
-        selection_button_frame = ttk.Frame(frame)
-        selection_button_frame.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
-
-        def select_all() -> None:
-            listbox.selection_set(0, END)
-
-        def clear_all() -> None:
-            listbox.selection_clear(0, END)
-
-        ttk.Button(selection_button_frame, text="Select all", command=select_all).grid(
-            row=0, column=0, padx=(0, 8),
-        )
-        ttk.Button(selection_button_frame, text="Clear all", command=clear_all).grid(
-            row=0, column=1,
-        )
-
-        # ======== Apply or cancel ========
-        button_frame = ttk.Frame(frame)
-        button_frame.grid(row=3, column=0, columnspan=2, sticky="e", pady=(18, 0))
-
-        def apply_selection() -> None:
-            selected_indices = listbox.curselection()
-            selected = {available_designs[index] for index in selected_indices}
-            if not selected:
-                messagebox.showerror(
-                    "Select structures",
-                    "Select at least one structure to include.",
-                    parent=popup,
-                )
-                return
-
-            self.selected_designs = selected
-            self.status.set(
-                f"Selected {len(selected)} of {len(available_designs)} structures for export."
-            )
-            popup.destroy()
-
-        ttk.Button(button_frame, text="Cancel", command=popup.destroy).grid(
-            row=0, column=0, padx=(0, 8),
-        )
-        ttk.Button(button_frame, text="Apply", command=apply_selection).grid(row=0, column=1)
-
     def _select_input(self) -> None:
         """Prompt the user for the source XLSX workbook."""
         # Let the user choose the source workbook.
@@ -823,11 +686,6 @@ class WaferMapGUI:
                 self.status.set("Geometry changed. Select clusters to rebuild the wafer map.")
             else:
                 self.status.set("Apply array and die settings before selecting clusters.")
-
-    def _invalidate_design_selection(self, *_args: object) -> None: #FA 2026-07-20: RESET STRUCTURES ON A NEW XLSX FILE
-        """Clear the cached structure list and selection after the XLSX path changes."""
-        self.available_designs = []
-        self.selected_designs = None
 
     def _update_cluster_selector_state(self) -> None:
         """Enable cluster selection only after both settings popups are applied."""
@@ -1007,26 +865,6 @@ class WaferMapGUI:
             if str(row.get("die_id", ""))[:2] not in ("01", "02")
         ]
 
-    def _filter_excluded_designs( #FA 2026-07-20: NEW FILTER FOR STRUCTURE/DESIGN SELECTION
-            self,
-            export_rows: list[dict[str, str | float]],
-    ) -> list[dict[str, str | float]]:
-        """Remove rows whose structure was not selected in the structure popup.
-
-        If the user never opened the structure selector, `selected_designs`
-        stays `None` and every row is kept, preserving the old behavior.
-        """
-        if self.selected_designs is None:
-            return export_rows
-        if not self.available_designs or len(self.selected_designs) >= len(self.available_designs):
-            return export_rows
-
-        return [
-            row
-            for row in export_rows
-            if extract_design_type(str(row.get("Array detail", ""))) in self.selected_designs
-        ]
-
     
     def _validated_output_directory(self) -> Path: 
         """Return the export folder after validating it exists."""
@@ -1159,7 +997,6 @@ class WaferMapGUI:
         try:
             export_rows = export_wafer(wafer)
             export_rows = self._filter_excluded_bars(export_rows)
-            export_rows = self._filter_excluded_designs(export_rows) #FA 2026-07-20: APPLY STRUCTURE FILTER BEFORE WRITING
             header_meta["LINES_DATA"] = str(len(export_rows))
             write_export_csv(export_rows, output_path, header_meta)
         except Exception as exc:
