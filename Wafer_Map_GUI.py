@@ -13,7 +13,7 @@ from __future__ import annotations
 import csv
 import threading
 from pathlib import Path
-from tkinter import Tk, StringVar, Toplevel, filedialog, messagebox
+from tkinter import BooleanVar, Tk, StringVar, Toplevel, filedialog, messagebox
 from tkinter import ttk
 
 from main import Wafer, build_wafer, export_wafer, filter_available_arrays_for_selection
@@ -127,11 +127,18 @@ class WaferMapGUI:
         self.acceptance_delta_x: float = 0.125
         self.acceptance_delta_y: float = 0.0725
 
-        # ======== Header metadata ========
+        # # ======== Header metadata ======== #FA 2026-07-17: COMMENTED OUT
+        # self.header_meta = {
+        #     field: StringVar()
+        #     for field in EDITABLE_METADATA_FIELDS
+        # }
+        
+        # ======== Header metadata ======== #FA 2026-07-17: ADD STATE VARIABLE
         self.header_meta = {
             field: StringVar()
             for field in EDITABLE_METADATA_FIELDS
         }
+        self.exclude_bars_01_02 = BooleanVar(value=False)
 
         # ======== GUI state ========
         self.status = StringVar(value="Select an XLSX file to begin.")
@@ -236,7 +243,26 @@ class WaferMapGUI:
         meta_frame.columnconfigure(1, weight=1)
         meta_frame.columnconfigure(3, weight=1)
 
-        for index, field in enumerate(EDITABLE_METADATA_FIELDS):
+        # for index, field in enumerate(EDITABLE_METADATA_FIELDS):
+        #     row = index // 2
+        #     label_column = (index % 2) * 2
+        #     entry_column = label_column + 1
+        #     ttk.Label(meta_frame, text=field).grid(
+        #         row=row,
+        #         column=label_column,
+        #         sticky="w",
+        #         padx=(0, 8),
+        #         pady=4,
+        #     )
+        #     ttk.Entry(meta_frame, textvariable=self.header_meta[field]).grid(
+        #         row=row,
+        #         column=entry_column,
+        #         sticky="ew",
+        #         padx=(0, 14),
+        #         pady=4,
+        #     )
+        
+        for index, field in enumerate(EDITABLE_METADATA_FIELDS): #FA 2026-07-17
             row = index // 2
             label_column = (index % 2) * 2
             entry_column = label_column + 1
@@ -254,6 +280,33 @@ class WaferMapGUI:
                 padx=(0, 14),
                 pady=4,
             )
+
+        # Occupies the grid slot LINES_DATA used to fill (last field's slot,
+        # now empty since EDITABLE_METADATA_FIELDS has one fewer entry).
+        next_index = len(EDITABLE_METADATA_FIELDS)
+        exclude_row = next_index // 2
+        exclude_column = (next_index % 2) * 2
+        ttk.Checkbutton(
+            meta_frame,
+            text="Exclude bars 01/02?",
+            variable=self.exclude_bars_01_02,
+        ).grid(
+            row=exclude_row,
+            column=exclude_column,
+            columnspan=2,
+            sticky="w",
+            padx=(0, 8),
+            pady=4,
+        )
+
+        # ======== Export and status ========
+        # self.export_button = ttk.Button( #FA 2026-07-17: COMMENTED OUT
+        #     frame,
+        #     text="Export CSV",
+        #     command=self._start_export,
+        #     state="disabled",
+        # )
+
 
         # ======== Export and status ========
         self.export_button = ttk.Button(
@@ -796,6 +849,23 @@ class WaferMapGUI:
 
     #     return output_path
     
+    def _filter_excluded_bars( #FA 2026-07-17: ADD A FILTER HELPER FUNCTION
+            self,
+            export_rows: list[dict[str, str | float]],
+    ) -> list[dict[str, str | float]]:
+        """Remove rows whose die_id belongs to bar 01 or 02, if requested."""
+        if not self.exclude_bars_01_02.get():
+            return export_rows
+
+        # die_id is built as f"{bar_number:02d}{array_label}", so the first
+        # two characters are the zero-padded bar number.
+        return [
+            row
+            for row in export_rows
+            if str(row.get("die_id", ""))[:2] not in ("01", "02")
+        ]
+
+    
     def _validated_output_directory(self) -> Path: 
         """Return the export folder after validating it exists."""
         raw_path = self.output_directory.get().strip()
@@ -926,6 +996,7 @@ class WaferMapGUI:
         """Flatten selected clusters and write their export rows."""
         try:
             export_rows = export_wafer(wafer)
+            export_rows = self._filter_excluded_bars(export_rows)
             header_meta["LINES_DATA"] = str(len(export_rows))
             write_export_csv(export_rows, output_path, header_meta)
         except Exception as exc:
