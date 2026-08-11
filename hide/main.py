@@ -244,7 +244,7 @@ class Array:
     def find_width(self) -> float:
         """Return the full X-direction array footprint width."""
         die = self.dies[1]
-        return die.width * self.dies_per_array #FA 2026-08-11: Removed the cleave street from the cluster calculation
+        return self.array_side * 2 + die.width * self.dies_per_array
 
     def find_height(self) -> float:
         """Return the full Y-direction array footprint height."""
@@ -891,73 +891,6 @@ FAB_AREA_PATTERN = re.compile(
     re.IGNORECASE,
 )
 FAB_AREA_LABEL_PATTERN = re.compile(r"Fab Area", re.IGNORECASE)
-
-
-def extract_design_type(detail: str) -> str:
-    """Return the normalized structure/design label from an array detail cell.
-
-    Group labels such as "TS-GroupD [D1 D2 D3 D4]" collapse to their group
-    prefix ("TS-GroupD") so the whole group is one selectable structure.
-    Simple labels such as "D01" pass through unchanged. Blank cells return "".
-
-    >>> extract_design_type("TS-GroupD [D1 D2 D3 D4]")
-    'TS-GroupD'
-    >>> extract_design_type("D01")
-    'D01'
-    >>> extract_design_type("  ")
-    ''
-    """
-    text = detail.strip()
-    if not text:
-        return ""
-
-    bracket_index = text.find("[")
-    if bracket_index != -1:
-        text = text[:bracket_index].strip()
-
-    return text
-
-
-def list_available_designs(array_table: ArrayTable) -> list[str]:
-    """Return the sorted, unique structure/design labels found in an array table.
-
-    Only numeric "Array position" rows are scanned, matching the same bar-row
-    filtering `build_wafer` uses, so header rows and trailing repeated-header
-    rows are automatically excluded regardless of how many bar rows exist.
-    Fab Area markers and empty cells are skipped.
-
-    >>> list_available_designs([
-    ...     {"Array position": "BAR#", "A": "ARY-1"},
-    ...     {"Array position": "1", "A": "D01", "B": "Fab Area (1mm x 1mm)"},
-    ...     {"Array position": "2", "A": "D02", "B": "TS-GroupD [D1 D2 D3 D4]"},
-    ...     {"Array position": "Array position", "A": "ARY-1"},
-    ... ])
-    ['D01', 'D02', 'TS-GroupD']
-    """
-    designs: set[str] = set()
-
-    for row in array_table:
-        bar_label = row.get("Array position", "")
-        try:
-            int(bar_label)
-        except ValueError:
-            continue
-
-        for column_label, cell_value in row.items():
-            if column_label == "Array position":
-                continue
-
-            detail = str(cell_value) if cell_value is not None else ""
-            if not detail.strip():
-                continue
-            if FAB_AREA_LABEL_PATTERN.search(detail):
-                continue
-
-            design_type = extract_design_type(detail)
-            if design_type:
-                designs.add(design_type)
-
-    return sorted(designs)
 
 
 def _fab_area_excluded_slots(cluster: Cluster) -> set[tuple[str, str]]:
