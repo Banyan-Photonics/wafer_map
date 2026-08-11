@@ -244,7 +244,7 @@ class Array:
     def find_width(self) -> float:
         """Return the full X-direction array footprint width."""
         die = self.dies[1]
-        return self.array_side * 2 + die.width * self.dies_per_array
+        return die.width * self.dies_per_array #FA 2026-08-11: Removed the cleave street from the cluster calculation
 
     def find_height(self) -> float:
         """Return the full Y-direction array footprint height."""
