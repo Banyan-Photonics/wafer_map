@@ -21,15 +21,20 @@ but the numeric values remain millimeters.
 """
 from __future__ import annotations
 import re
-from math import ceil, hypot, sqrt
+from math import ceil, cos, hypot, radians, sin, sqrt
 from typing import Literal
 
 from xlsx_reader import read_xlsx_as_dicts as rx
+
+# ======== Type Aliases ========
+
 Point = tuple[float, float]
 ClusterWaferStatus = Literal["inside", "edge", "outside"]
 ArrayTable = list[dict[str, str]]
-ExportTable = list[dict[str, float]]
+ExportTable = list[dict[str, str | float]]
 
+
+# ======== Geometry Data Models ========
 
 class Cluster:
     """One cluster footprint containing bars keyed by bar label.
@@ -395,6 +400,8 @@ class _NoAvailableArraysError(ValueError):
     """Raised when availability filtering removes every array in a cluster."""
 
 
+# ======== Wafer Selection State ========
+
 class Wafer:
     """Top-level wafer state containing geometry and cluster inclusion."""
 
@@ -579,6 +586,8 @@ class Wafer:
         """Return whether any selectable clusters are selected."""
         return bool(self.selected_cluster_labels)
 
+
+# ======== Wafer Data Building ========
 
 def _csv_number(value: float) -> float:
     """Return a clean numeric value for CSV export."""
@@ -803,6 +812,8 @@ def build_wafer(
     )
 
 
+# ======== Wafer Availability Filtering ========
+
 def filter_available_arrays_for_selection(wafer: Wafer) -> None:
     """Remove unavailable arrays from a wafer once before visual selection.
 
@@ -886,6 +897,8 @@ def _cluster_in_wafer(
     return "inside"
 
 
+# ======== Design Discovery ========
+
 FAB_AREA_PATTERN = re.compile(
     r"Fab Area\s*\(\s*([0-9]*\.?[0-9]+)\s*mm\s*x\s*([0-9]*\.?[0-9]+)\s*mm\s*\)",
     re.IGNORECASE,
@@ -959,6 +972,109 @@ def list_available_designs(array_table: ArrayTable) -> list[str]:
 
     return sorted(designs)
 
+
+# ======== Final Export Data Filtering and Rotation ========
+
+# ST 2026-09-01: Added a reusable point-rotation helper for export rows.
+def _rotate_point(
+        x: float,
+        y: float,
+        cosine: float,
+        sine: float,
+) -> Point:
+    """Return one point rotated using precomputed trigonometric values."""
+    return (
+        _csv_number(x * cosine - y * sine),
+        _csv_number(x * sine + y * cosine),
+    )
+
+
+# ST 2026-09-01: Added configurable clockwise rotation for exported rows.
+def rotate_export_rows(
+        export_rows: ExportTable,
+        clockwise_degrees: int,
+) -> ExportTable:
+    """Rotate export rows in place around wafer center `(0, 0)`.
+
+    Only right-angle clockwise rotations are supported so exported rectangular
+    dimensions remain well-defined.
+
+    >>> rows = [{"die_id": "01A", "xc_ref[mm]": 2.0, "yc_ref[mm]": 1.0,
+    ...          "xc_chip[mm]": 2.0, "yc_chip[mm]": 1.0,
+    ...          "width[mm]": 3.0, "height[mm]": 4.0}]
+    >>> rotate_export_rows(rows, 90) is rows
+    True
+    >>> rows[0]["xc_ref[mm]"], rows[0]["yc_ref[mm]"], rows[0]["width[mm]"], rows[0]["height[mm]"]
+    (1.0, -2.0, 4.0, 3.0)
+    """
+    valid_rotations = {0, 90, 180, 270}
+    if clockwise_degrees not in valid_rotations:
+        raise ValueError(
+            "WAFER_ROTATION must be one of 0, 90, 180, or 270 degrees clockwise."
+        )
+
+    angle = radians(-clockwise_degrees)
+    cosine = cos(angle)
+    sine = sin(angle)
+
+    for row in export_rows:
+        row["xc_ref[mm]"], row["yc_ref[mm]"] = _rotate_point(
+            float(row["xc_ref[mm]"]),
+            float(row["yc_ref[mm]"]),
+            cosine,
+            sine,
+        )
+        row["xc_chip[mm]"], row["yc_chip[mm]"] = _rotate_point(
+            float(row["xc_chip[mm]"]),
+            float(row["yc_chip[mm]"]),
+            cosine,
+            sine,
+        )
+
+        if clockwise_degrees in (90, 270):
+            row["width[mm]"], row["height[mm]"] = (
+                row["height[mm]"],
+                row["width[mm]"],
+            )
+
+    # Preserve serpentine probe order in the final, rotated coordinate system.
+    export_rows[:] = _sort_rows_for_serpentine_probe_path(export_rows)
+    return export_rows
+
+
+# ST 2026-09-01: Moved bar filtering into a GUI-independent export helper.
+def filter_export_rows_by_bars(
+        export_rows: ExportTable,
+        excluded_bars: set[str],
+) -> ExportTable:
+    """Return rows whose zero-padded bar identifier is not excluded."""
+    if not excluded_bars:
+        return export_rows
+
+    return [
+        row
+        for row in export_rows
+        if str(row.get("die_id", ""))[:2] not in excluded_bars
+    ]
+
+
+# ST 2026-09-01: Moved design filtering into a GUI-independent export helper.
+def filter_export_rows_by_designs(
+        export_rows: ExportTable,
+        selected_designs: set[str] | None,
+) -> ExportTable:
+    """Return rows whose normalized design label is selected for export."""
+    if selected_designs is None:
+        return export_rows
+
+    return [
+        row
+        for row in export_rows
+        if extract_design_type(str(row.get("Array detail", ""))) in selected_designs
+    ]
+
+
+# ======== Wafer Availability Filtering Helpers ========
 
 def _fab_area_excluded_slots(cluster: Cluster) -> set[tuple[str, str]]:
     """Return `(bar_label, array_label)` slots occupied by Fab Area markers.
@@ -1128,6 +1244,8 @@ def _array_is_available(
     return _point_inside_wafer_by_circle_y(test_die.acceptor.test_point, wafer_radius)
 
 
+# ======== Export Row Generation ========
+
 def _export_rows_for_cluster(
         cluster_label: str,
         cluster: Cluster,
@@ -1150,20 +1268,13 @@ def _export_rows_for_cluster(
                         "tile_id": cluster_label,
                         "die_id": f"{int(bar_label):02d}{array_label}", #FA 2026-07-16: REMOVED PD DIE NUMBER FROM WAFER MAP
                         #"die_id": f"{int(bar_label):02d}{array_label}{die_number}", #FA 2026-07-16: COMMENTED OUT LINE THAT ADDS PD DIE NUMBER TO WAFER MAP
-                        # "xc_ref[mm]": _csv_number(center_x),
-                        # "yc_ref[mm]": _csv_number(center_y),
-                        # "xc_chip[mm]": _csv_number(center_x),
-                        # "yc_chip[mm]": _csv_number(center_y),
-                        # "width[mm]": _csv_number(die.width),
-                        # "height[mm]": _csv_number(die.height),
-                        # "Array detail": array.detail,
-                        
-                        "xc_ref[mm]": _csv_number(center_y), #FA 2026-07-16: 90 DEGREE CLOCKWISE ROTATION
-                        "yc_ref[mm]": _csv_number(-center_x),
-                        "xc_chip[mm]": _csv_number(center_y),
-                        "yc_chip[mm]": _csv_number(-center_x),
-                        "width[mm]": _csv_number(die.height),
-                        "height[mm]": _csv_number(die.width),
+                        # ST 2026-09-01: Keep rows unrotated until the final export step.
+                        "xc_ref[mm]": _csv_number(center_x),
+                        "yc_ref[mm]": _csv_number(center_y),
+                        "xc_chip[mm]": _csv_number(center_x),
+                        "yc_chip[mm]": _csv_number(center_y),
+                        "width[mm]": _csv_number(die.width),
+                        "height[mm]": _csv_number(die.height),
                         "Array detail": array.detail,
                     }
                 )
@@ -1241,6 +1352,8 @@ def export_wafer(wafer: Wafer) -> ExportTable:
         filter_arrays=not wafer.arrays_filtered,
     )
 
+
+# ======== Command-Line Entry Point ========
 
 if __name__ == '__main__':
     wafer_diameter_input = input("Wafer diameter [mm]: ").strip()

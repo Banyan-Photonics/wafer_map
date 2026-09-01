@@ -21,19 +21,22 @@ from main import (
     Wafer,
     build_wafer,
     export_wafer,
-    extract_design_type,
     filter_available_arrays_for_selection,
+    filter_export_rows_by_bars,
+    filter_export_rows_by_designs,
     list_available_designs,
+    rotate_export_rows,
 )
 from wafer_map_selector import ClusterSelector
 from xlsx_reader import read_xlsx_as_dicts
 
 
+# ======== Constants and CSV Writing ========
+
 MILLIMETERS_PER_INCH = 25.4
 DEFAULT_SHEET_NAME = "Cluster"
 
-
-#GeometrySettings = dict[str, float | int | str]
+GeometrySettings = dict[str, float | int | str]
 
 CSV_METADATA_FIELDS = [
     "ID_PROJECT",
@@ -111,6 +114,8 @@ def write_export_csv(
 class WaferMapGUI:
     """Small Tkinter app for selecting an XLSX file and exporting the CSV."""
 
+    # ======== Initialization and Layout ========
+
     def __init__(self, root: Tk) -> None:
         """Initialize shared GUI state and build the main window."""
         # ======== Root and file paths ========
@@ -118,7 +123,8 @@ class WaferMapGUI:
         default_input_path = Path(__file__).with_name("array_position_table.xlsx")
         self.input_path = StringVar(value=str(default_input_path))
         #self.output_path = StringVar(value=str(default_input_path.with_suffix(".csv"))) #FA 2026-07-17: COMMENTED OUT, REPLACED BY THE LINE BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
-        self.output_directory = StringVar(value=str(default_input_path.parent)) #FA 2026-07-17: CHANGED THE CSV EXPORT FIELD TO ACCEPT A DIRECTORY RATHER THAN HAVINT TO SPECIFY FILE NAME
+        self.output_directory = StringVar(value=str(
+            default_input_path.parent))  #FA 2026-07-17: CHANGED THE CSV EXPORT FIELD TO ACCEPT A DIRECTORY RATHER THAN HAVINT TO SPECIFY FILE NAME
 
         # ======== Applied geometry settings ========
         # Store validated application state as numbers. StringVars are only
@@ -140,10 +146,11 @@ class WaferMapGUI:
         #     field: StringVar()
         #     for field in EDITABLE_METADATA_FIELDS
         # }
-        
+
         # ======== Header metadata ======== #FA 2026-07-17: ADD STATE VARIABLE
+        # ST 2026-09-01: Default metadata rotation to the existing 90-degree clockwise export.
         self.header_meta = {
-            field: StringVar()
+            field: StringVar(value="90" if field == "WAFER_ROTATION" else "")
             for field in EDITABLE_METADATA_FIELDS
         }
         self.exclude_bars_01_02 = BooleanVar(value=False)
@@ -161,7 +168,8 @@ class WaferMapGUI:
         self.array_settings_applied = False
         self.die_settings_applied = False
         self.input_path.trace_add("write", self._invalidate_clusters)
-        self.input_path.trace_add("write", self._invalidate_design_selection) #FA 2026-07-20: RESET STRUCTURES WHEN THE XLSX PATH CHANGES
+        self.input_path.trace_add("write",
+                                  self._invalidate_design_selection)  #FA 2026-07-20: RESET STRUCTURES WHEN THE XLSX PATH CHANGES
         self.wafer_diameter_text.trace_add("write", self._invalidate_clusters)
 
         # Configure the main window before creating widgets.
@@ -191,18 +199,21 @@ class WaferMapGUI:
 
         # ttk.Label(frame, text="CSV export").grid(row=1, column=0, sticky="w", padx=(0, 10),
         #                                          pady=(12, 0)) #FA 2026-07-17: COMMENTED OUT AND REPLACED WITH BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
-        
+
         ttk.Label(frame, text="Export folder").grid(row=1, column=0, sticky="w", padx=(0, 10),
-                                         pady=(12, 0)) #FA 2026-07-17: SETS FIELD FOR EXPORT FOLDER ON LEFT OF STRING BOX
-        
+                                                    pady=(12,
+                                                          0))  #FA 2026-07-17: SETS FIELD FOR EXPORT FOLDER ON LEFT OF STRING BOX
+
         # ttk.Entry(frame, textvariable=self.output_path).grid(row=1, column=1, sticky="ew",
         #                                                      pady=(12, 0)) #FA 2026-07-17: COMMENTED OUT AND REPLACED WITH BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
-        
+
         ttk.Entry(frame, textvariable=self.output_directory).grid(row=1, column=1, sticky="ew",
-                                                             pady=(12, 0)) #FA 2026-07-17: SETS THE CSV SAVE PATH
-        
+                                                                  pady=(12,
+                                                                        0))  #FA 2026-07-17: SETS THE CSV SAVE PATH
+
         # ttk.Button(frame, text="Save As", command=self._select_output).grid( #FA 2026-07-17: COMMENTED OUT AND REPLACED WITH BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
-        ttk.Button(frame, text="Browse", command=self._select_output).grid( #FA 2026-07-17: SAVE AS DIRECTORY BUTTON
+        ttk.Button(frame, text="Browse", command=self._select_output).grid(
+            #FA 2026-07-17: SAVE AS DIRECTORY BUTTON
             row=1,
             column=2,
             padx=(10, 0),
@@ -290,25 +301,41 @@ class WaferMapGUI:
         #         padx=(0, 14),
         #         pady=4,
         #     )
-        
-        for index, field in enumerate(EDITABLE_METADATA_FIELDS): #FA 2026-07-17
+
+        # ST 2026-09-01: Use a constrained clockwise-rotation combobox for metadata.
+        for index, field in enumerate(EDITABLE_METADATA_FIELDS):  #FA 2026-07-17
             row = index // 2
             label_column = (index % 2) * 2
             entry_column = label_column + 1
-            ttk.Label(meta_frame, text=field).grid(
+            label_text = "WAFER_ROTATION (clockwise)" if field == "WAFER_ROTATION" else field
+            ttk.Label(meta_frame, text=label_text).grid(
                 row=row,
                 column=label_column,
                 sticky="w",
                 padx=(0, 8),
                 pady=4,
             )
-            ttk.Entry(meta_frame, textvariable=self.header_meta[field]).grid(
-                row=row,
-                column=entry_column,
-                sticky="ew",
-                padx=(0, 14),
-                pady=4,
-            )
+            if field == "WAFER_ROTATION":
+                ttk.Combobox(
+                    meta_frame,
+                    textvariable=self.header_meta[field],
+                    values=("0", "90", "180", "270"),
+                    state="readonly",
+                ).grid(
+                    row=row,
+                    column=entry_column,
+                    sticky="ew",
+                    padx=(0, 14),
+                    pady=4,
+                )
+            else:
+                ttk.Entry(meta_frame, textvariable=self.header_meta[field]).grid(
+                    row=row,
+                    column=entry_column,
+                    sticky="ew",
+                    padx=(0, 14),
+                    pady=4,
+                )
 
         # Occupies the grid slot LINES_DATA used to fill (last field's slot,
         # now empty since EDITABLE_METADATA_FIELDS has one fewer entry).
@@ -336,7 +363,6 @@ class WaferMapGUI:
         #     state="disabled",
         # )
 
-
         # ======== Export and status ========
         self.export_button = ttk.Button(
             frame,
@@ -348,6 +374,8 @@ class WaferMapGUI:
 
         ttk.Separator(frame).grid(row=9, column=0, columnspan=3, sticky="ew", pady=(18, 12))
         ttk.Label(frame, textvariable=self.status).grid(row=10, column=0, columnspan=3, sticky="w")
+
+    # ======== Settings Dialogs ========
 
     def _open_array_settings_popup(self) -> None:
         """Open the modal popup for array pitch and spacing inputs."""
@@ -637,7 +665,10 @@ class WaferMapGUI:
                                                                             padx=(0, 8))
         ttk.Button(button_frame, text="Apply", command=apply_values).grid(row=0, column=1)
 
-    def _open_design_selector(self) -> None: #FA 2026-07-20: NEW POPUP FOR STRUCTURE/DESIGN SELECTION
+    # ======== File and Selection Workflow ========
+
+    def _open_design_selector(
+            self) -> None:  #FA 2026-07-20: NEW POPUP FOR STRUCTURE/DESIGN SELECTION
         """Open the modal popup for selecting which structures to export."""
         try:
             input_path = self._validated_input_path()
@@ -762,14 +793,16 @@ class WaferMapGUI:
 
         # if not self.output_path.get():
         #     self.output_path.set(str(input_path.with_suffix(".csv"))) #FA 2026-07-17: COMMENTED OUT AND REPLACED WITH BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
-        
+
         if not self.output_directory.get():
-            self.output_directory.set(str(input_path.parent)) #FA 2026-07-17: SETS A DEFAULT LOCATION INSTEAD OF A CSV INCASE NON IS SELECTED
+            self.output_directory.set(
+                str(input_path.parent))  #FA 2026-07-17: SETS A DEFAULT LOCATION INSTEAD OF A CSV INCASE NON IS SELECTED
 
         if self.array_settings_applied and self.die_settings_applied:
             self.status.set("Input selected. Select clusters to rebuild the wafer map.")
         else:
-            self.status.set("Input selected. Apply array and die settings before selecting clusters.")
+            self.status.set(
+                "Input selected. Apply array and die settings before selecting clusters.")
 
     # def _select_output(self) -> None: #FA 2026-07-17: COMMENTED OUT AND REPLACED WITH BELOW. !!DELETE!! ONCE FUNCTIONALITY IS CONFIRMED
     #     """Prompt the user for the output CSV path."""
@@ -789,13 +822,14 @@ class WaferMapGUI:
     #                 and self.export_button.instate(["!disabled"])
     #         ):
     #             self.status.set("Ready to export selected clusters.")
-    
-    def _select_output(self) -> None: #FA 2026-07-17: SELECTS A FOLDER INSTEAD OF A FILENAME
+
+    def _select_output(self) -> None:  #FA 2026-07-17: SELECTS A FOLDER INSTEAD OF A FILENAME
         """Prompt the user for the output folder."""
         # Start the browse dialog near the selected input workbook when possible.
         initial_dir = (
-            self.output_directory.get()
-            or (Path(self.input_path.get()).parent if self.input_path.get() else str(Path.cwd()))
+                self.output_directory.get()
+                or (Path(self.input_path.get()).parent if self.input_path.get() else str(
+            Path.cwd()))
         )
         selected = filedialog.askdirectory(
             title="Select export folder",
@@ -824,7 +858,8 @@ class WaferMapGUI:
             else:
                 self.status.set("Apply array and die settings before selecting clusters.")
 
-    def _invalidate_design_selection(self, *_args: object) -> None: #FA 2026-07-20: RESET STRUCTURES ON A NEW XLSX FILE
+    def _invalidate_design_selection(self,
+                                     *_args: object) -> None:  #FA 2026-07-20: RESET STRUCTURES ON A NEW XLSX FILE
         """Clear the cached structure list and selection after the XLSX path changes."""
         self.available_designs = []
         self.selected_designs = None
@@ -919,17 +954,10 @@ class WaferMapGUI:
             self.export_button.configure(state="disabled")
             self.status.set("No clusters selected for export.")
 
-    # def _start_export(self) -> None:
-    #     """Write the selected cluster tree to CSV in a worker thread."""
-    #     try:
-    #         output_path = self._validated_output_path()
-    #         geometry_settings = self._geometry_settings()
-    #         header_meta = self._header_meta_values(geometry_settings)
-    #     except ValueError as exc:
-    #         messagebox.showerror("Export CSV", str(exc))
-    #         return
-    
-    def _start_export(self) -> None: #FA 2026-07-17: BUILD THE PATH FROM DIRECTORY + FIELDS IN THE GUI
+    # ======== Export Workflow ========
+
+    def _start_export(
+            self) -> None:  #FA 2026-07-17: BUILD THE PATH FROM DIRECTORY + FIELDS IN THE GUI
         """Write the selected cluster tree to CSV in a worker thread."""
         try:
             output_directory = self._validated_output_directory()
@@ -947,6 +975,14 @@ class WaferMapGUI:
             messagebox.showerror("Export CSV", "Select at least one cluster first.")
             return
 
+        # ST 2026-09-01: Snapshot GUI choices before the background export begins.
+        excluded_bars = {"01", "02"} if self.exclude_bars_01_02.get() else set()
+        selected_designs = (
+            set(self.selected_designs)
+            if self.selected_designs is not None
+            else None
+        )
+
         self.export_button.configure(state="disabled")
         self.status.set("Exporting CSV...")
 
@@ -957,10 +993,14 @@ class WaferMapGUI:
                 output_path,
                 self.wafer,
                 header_meta,
+                excluded_bars,
+                selected_designs,
             ),
             daemon=True,
         )
         worker.start()
+
+    # ======== Validation and Metadata ========
 
     def _validated_input_path(self) -> Path:
         """Return the selected XLSX path after validating it exists."""
@@ -977,58 +1017,7 @@ class WaferMapGUI:
 
         return input_path
 
-    # def _validated_output_path(self) -> Path:
-    #     """Return the output CSV path, adding the extension if needed."""
-    #     # Normalize the output path and force a .csv extension when omitted.
-    #     raw_path = self.output_path.get().strip()
-    #     if not raw_path:
-    #         raise ValueError("Choose where to save the CSV file.")
-
-    #     output_path = Path(raw_path)
-    #     if output_path.suffix.lower() != ".csv":
-    #         output_path = output_path.with_suffix(".csv")
-    #         self.output_path.set(str(output_path))
-
-    #     return output_path
-    
-    def _filter_excluded_bars( #FA 2026-07-17: ADD A FILTER HELPER FUNCTION
-            self,
-            export_rows: list[dict[str, str | float]],
-    ) -> list[dict[str, str | float]]:
-        """Remove rows whose die_id belongs to bar 01 or 02, if requested."""
-        if not self.exclude_bars_01_02.get():
-            return export_rows
-
-        # die_id is built as f"{bar_number:02d}{array_label}", so the first
-        # two characters are the zero-padded bar number.
-        return [
-            row
-            for row in export_rows
-            if str(row.get("die_id", ""))[:2] not in ("01", "02")
-        ]
-
-    def _filter_excluded_designs( #FA 2026-07-20: NEW FILTER FOR STRUCTURE/DESIGN SELECTION
-            self,
-            export_rows: list[dict[str, str | float]],
-    ) -> list[dict[str, str | float]]:
-        """Remove rows whose structure was not selected in the structure popup.
-
-        If the user never opened the structure selector, `selected_designs`
-        stays `None` and every row is kept, preserving the old behavior.
-        """
-        if self.selected_designs is None:
-            return export_rows
-        if not self.available_designs or len(self.selected_designs) >= len(self.available_designs):
-            return export_rows
-
-        return [
-            row
-            for row in export_rows
-            if extract_design_type(str(row.get("Array detail", ""))) in self.selected_designs
-        ]
-
-    
-    def _validated_output_directory(self) -> Path: 
+    def _validated_output_directory(self) -> Path:
         """Return the export folder after validating it exists."""
         raw_path = self.output_directory.get().strip()
         if not raw_path:
@@ -1042,7 +1031,8 @@ class WaferMapGUI:
 
         return output_directory
 
-    def _build_export_filename(self, header_meta: dict[str, str]) -> str: #FA 2026-07-17: !!!CHANGE THIS IF YOU WANT TO CHANGE NAME ORDER!!!
+    def _build_export_filename(self, header_meta: dict[
+        str, str]) -> str:  #FA 2026-07-17: !!!CHANGE THIS IF YOU WANT TO CHANGE NAME ORDER!!!
         """Return the auto-generated CSV filename from header metadata."""
         # Filename format: {ID_PROJECT}_{ID_BATCH}_{ID_WAFER}_{WAFER_ROTATION}.csv
         required_fields = ("ID_PROJECT", "ID_BATCH", "ID_WAFER", "WAFER_ROTATION")
@@ -1093,7 +1083,7 @@ class WaferMapGUI:
             raise ValueError("Acceptor shape must be circle or rectangle.")
 
         #die_width = (array_width - 2 * array_side) / dies_per_array
-        die_width = (array_width) #FA 2026-07-16: REMOVED CLEAVE STREET
+        die_width = (array_width)  #FA 2026-07-16: REMOVED CLEAVE STREET
         if die_width <= 0:
             raise ValueError("Array width must be greater than 2 x array side.")
         if acceptor_shape == "circle":
@@ -1101,11 +1091,11 @@ class WaferMapGUI:
         else:
             acceptor_center_x = acceptor_delta_x + acceptor_width / 2
 
-#        if not self._numbers_close(acceptor_center_x, die_width / 2):
- #           raise ValueError(
-  #              "Acceptor must be symmetric from left/right die sides: "
-   #             "its center X must equal half the die width."
-    #        )
+        #        if not self._numbers_close(acceptor_center_x, die_width / 2):
+        #           raise ValueError(
+        #              "Acceptor must be symmetric from left/right die sides: "
+        #             "its center X must equal half the die width."
+        #        )
 
         return {
             "array_width": array_width,
@@ -1138,28 +1128,25 @@ class WaferMapGUI:
         header_meta["TILE_HEIGHT"] = str(round(float(geometry_settings["array_height"]) * 42, 6))
         return header_meta
 
-    # def _export_worker(
-    #         self,
-    #         output_path: Path,
-    #         wafer: Wafer,
-    #         header_meta: dict[str, str],
-    # ) -> None:
-    #     """Flatten selected clusters and write their export rows."""
-    #     try:
-    #         export_rows = export_wafer(wafer)
-    #         write_export_csv(export_rows, output_path, header_meta)
-    
-    def _export_worker( #FA 2026-07-17: USES THE NUMBER OF GENERATED ROWS TO WRITE LINES_DATA IN CSV
+    # ======== Export Workflow ========
+
+    def _export_worker(
+            #FA 2026-07-17: USES THE NUMBER OF GENERATED ROWS TO WRITE LINES_DATA IN CSV
             self,
             output_path: Path,
             wafer: Wafer,
             header_meta: dict[str, str],
+            excluded_bars: set[str],
+            selected_designs: set[str] | None,
     ) -> None:
         """Flatten selected clusters and write their export rows."""
         try:
             export_rows = export_wafer(wafer)
-            export_rows = self._filter_excluded_bars(export_rows)
-            export_rows = self._filter_excluded_designs(export_rows) #FA 2026-07-20: APPLY STRUCTURE FILTER BEFORE WRITING
+            # ST 2026-09-01: Filter first, then rotate only rows that will be exported.
+            export_rows = filter_export_rows_by_bars(export_rows, excluded_bars)
+            export_rows = filter_export_rows_by_designs(export_rows, selected_designs)
+            wafer_rotation = int(header_meta["WAFER_ROTATION"])
+            export_rows = rotate_export_rows(export_rows, wafer_rotation)
             header_meta["LINES_DATA"] = str(len(export_rows))
             write_export_csv(export_rows, output_path, header_meta)
         except Exception as exc:
@@ -1169,6 +1156,8 @@ class WaferMapGUI:
 
         # Notify the main thread that the export completed successfully.
         self.root.after(0, self._export_finished, output_path, len(export_rows))
+
+    # ======== Completion Callbacks ========
 
     def _export_finished(self, output_path: Path, row_count: int) -> None:
         """Handle successful export completion on the Tk main thread."""
@@ -1184,6 +1173,8 @@ class WaferMapGUI:
         self.status.set("Export failed.")
         messagebox.showerror("Export CSV", str(error))
 
+
+# ======== Application Entry Point ========
 
 def run() -> None:
     """Create and run the Tkinter application."""
